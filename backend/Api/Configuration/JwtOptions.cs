@@ -2,11 +2,17 @@ using System.ComponentModel.DataAnnotations;
 using System.Text;
 using Microsoft.IdentityModel.Tokens;
 
-namespace Api.Features.Auth;
+namespace Api.Configuration;
 
 public class JwtOptions
 {
     public const string SectionName = "Jwt";
+
+    /// <summary>Used both to sign tokens and as the only algorithm accepted when validating them.</summary>
+    public const string Algorithm = SecurityAlgorithms.HmacSha256;
+
+    /// <summary>Tolerance for clock drift when validating lifetimes; a token is accepted until <c>exp</c> + this.</summary>
+    public static readonly TimeSpan ClockSkew = TimeSpan.FromSeconds(30);
 
     [Required]
     public string Issuer { get; set; } = "";

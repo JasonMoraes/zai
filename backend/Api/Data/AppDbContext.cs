@@ -1,3 +1,5 @@
+using Api.Entities;
+using Api.Validation;
 using Microsoft.EntityFrameworkCore;
 
 namespace Api.Data;
@@ -5,13 +7,41 @@ namespace Api.Data;
 public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(options)
 {
     public DbSet<AdminUser> AdminUsers => Set<AdminUser>();
+    public DbSet<RevokedToken> RevokedTokens => Set<RevokedToken>();
+    public DbSet<Series> Series => Set<Series>();
+    public DbSet<Sensor> Sensors => Set<Sensor>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder.Entity<AdminUser>(user =>
         {
-            user.Property(u => u.Username).HasMaxLength(AdminUser.UsernameMaxLength);
+            user.Property(u => u.Username).HasMaxLength(FieldLimits.UsernameMaxLength);
             user.HasIndex(u => u.Username).IsUnique();
+        });
+
+        modelBuilder.Entity<RevokedToken>(token =>
+        {
+            token.HasKey(t => t.Jti);
+            token.Property(t => t.Jti).HasMaxLength(RevokedToken.JtiMaxLength);
+            token.HasIndex(t => t.ExpiresAt);
+        });
+
+        modelBuilder.Entity<Series>(series =>
+        {
+            series.Property(s => s.Name).HasMaxLength(FieldLimits.NameMaxLength);
+            series.Property(s => s.Color).HasMaxLength(FieldLimits.ColorLength);
+            series.Property(s => s.Unit).HasMaxLength(FieldLimits.UnitMaxLength);
+        });
+
+        modelBuilder.Entity<Sensor>(sensor =>
+        {
+            sensor.Property(s => s.Name).HasMaxLength(FieldLimits.NameMaxLength);
+            sensor.Property(s => s.ApiKeyHash).HasMaxLength(Sensor.ApiKeyHashLength).IsFixedLength();
+            // Unique: measurement uploads look the sensor up by the hash of the key they present.
+            sensor.HasIndex(s => s.ApiKeyHash).IsUnique();
+            // Contract: deleting a series removes its sensors too.
+            sensor.HasOne(s => s.Series).WithMany(s => s.Sensors).HasForeignKey(s => s.SeriesId)
+                .OnDelete(DeleteBehavior.Cascade);
         });
     }
 }
