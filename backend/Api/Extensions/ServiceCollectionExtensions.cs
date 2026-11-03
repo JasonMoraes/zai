@@ -1,9 +1,12 @@
+using System.Text.Json.Serialization;
+using Api.Authentication;
 using Api.Configuration;
 using Api.Data;
 using Api.Entities;
 using Api.Errors;
 using Api.OpenApi;
 using Api.Services;
+using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc.Formatters;
@@ -35,26 +38,50 @@ public static class ServiceCollectionExtensions
             var jsonInput = options.InputFormatters.OfType<SystemTextJsonInputFormatter>().Single();
             jsonInput.SupportedMediaTypes.Clear();
             jsonInput.SupportedMediaTypes.Add("application/json");
+            options.Conventions.Add(new AuthorizeByDefaultConvention());
+            // Polish, client-safe messages for query/route binding errors (e.g. ?limit=abc).
+            options.ModelBindingMessageProvider.SetAttemptedValueIsInvalidAccessor((_, _) => "Niepoprawna wartość.");
+            options.ModelBindingMessageProvider.SetValueIsInvalidAccessor(_ => "Niepoprawna wartość.");
+            options.ModelBindingMessageProvider.SetValueMustBeANumberAccessor(_ => "Wartość musi być liczbą.");
+            options.ModelBindingMessageProvider.SetNonPropertyAttemptedValueIsInvalidAccessor(_ => "Niepoprawna wartość.");
+            options.ModelBindingMessageProvider.SetUnknownValueIsInvalidAccessor(_ => "Niepoprawna wartość.");
+            options.ModelBindingMessageProvider.SetMissingRequestBodyRequiredValueAccessor(() => "Treść żądania jest wymagana.");
+            options.ModelBindingMessageProvider.SetMissingBindRequiredValueAccessor(_ => "Pole jest wymagane.");
+            options.ModelBindingMessageProvider.SetMissingKeyOrValueAccessor(() => "Pole jest wymagane.");
+            options.ModelBindingMessageProvider.SetValueMustNotBeNullAccessor(_ => "Pole jest wymagane.");
         })
         .ConfigureApiBehaviorOptions(options =>
             options.InvalidModelStateResponseFactory = ValidationProblems.FromModelState)
         // Don't echo System.Text.Json exception text (.NET type names, byte offsets) back to clients;
         // the field is still reported and the message falls back to a neutral one.
-        .AddJsonOptions(options => options.AllowInputFormatterExceptionMessages = false);
+        .AddJsonOptions(options =>
+        {
+            options.AllowInputFormatterExceptionMessages = false;
+            // ASP.NET's web defaults also read numbers from JSON strings ("minValue": "0"); the contract says a wrong type
+            // is a 400, so numbers must be JSON numbers.
+            options.JsonSerializerOptions.NumberHandling = JsonNumberHandling.Strict;
+        });
 
         services.AddEndpointsApiExplorer();
         services.AddSwaggerGen(options =>
         {
             options.SupportNonNullableReferenceTypes();
             options.NonNullableReferenceTypesAsRequired();
-            options.AddSecurityDefinition(BearerAuthOperationFilter.SchemeName, new OpenApiSecurityScheme
+            options.AddSecurityDefinition(SecurityRequirementsOperationFilter.BearerSchemeName, new OpenApiSecurityScheme
             {
                 Type = SecuritySchemeType.Http,
                 Scheme = "bearer",
                 BearerFormat = "JWT",
                 Description = "Token z `/api/auth/login`.",
             });
-            options.OperationFilter<BearerAuthOperationFilter>();
+            options.AddSecurityDefinition(SecurityRequirementsOperationFilter.ApiKeySchemeName, new OpenApiSecurityScheme
+            {
+                Type = SecuritySchemeType.ApiKey,
+                In = ParameterLocation.Header,
+                Name = ApiKeyDefaults.HeaderName,
+                Description = "Klucz API czujnika, otrzymany przy jego rejestracji.",
+            });
+            options.OperationFilter<SecurityRequirementsOperationFilter>();
         });
 
         return services;
@@ -86,7 +113,9 @@ public static class ServiceCollectionExtensions
             .ValidateDataAnnotations()
             .ValidateOnStart();
 
-        services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme).AddJwtBearer();
+        services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
+            .AddJwtBearer()
+            .AddScheme<AuthenticationSchemeOptions, ApiKeyAuthenticationHandler>(ApiKeyDefaults.AuthenticationScheme, null);
         services.AddOptions<JwtBearerOptions>(JwtBearerDefaults.AuthenticationScheme)
             .Configure<IOptions<JwtOptions>>((bearer, jwtOptions) =>
             {
@@ -127,6 +156,8 @@ public static class ServiceCollectionExtensions
         services.AddScoped<ITokenRevocationService, TokenRevocationService>();
         services.AddSingleton<IApiKeyGenerator, ApiKeyGenerator>();
         services.AddScoped<ISensorService, SensorService>();
+        services.AddScoped<IMeasurementService, MeasurementService>();
+        services.AddScoped<ISeriesService, SeriesService>();
 
         return services;
     }

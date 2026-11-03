@@ -47,6 +47,39 @@ namespace Api.Data.Migrations
                     b.ToTable("AdminUsers");
                 });
 
+            modelBuilder.Entity("Api.Entities.Measurement", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<long>("Id"));
+
+                    b.Property<int?>("SensorId")
+                        .HasColumnType("integer");
+
+                    b.Property<int>("SeriesId")
+                        .HasColumnType("integer");
+
+                    b.Property<DateTimeOffset>("Timestamp")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<double>("Value")
+                        .HasColumnType("double precision");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("SensorId");
+
+                    b.HasIndex("Timestamp");
+
+                    b.HasIndex("SeriesId", "Timestamp");
+
+                    b.HasIndex("SeriesId", "Value");
+
+                    b.ToTable("Measurements");
+                });
+
             modelBuilder.Entity("Api.Entities.RevokedToken", b =>
                 {
                     b.Property<string>("Jti")
@@ -135,6 +168,24 @@ namespace Api.Data.Migrations
                     b.HasKey("Id");
 
                     b.ToTable("Series");
+                });
+
+            modelBuilder.Entity("Api.Entities.Measurement", b =>
+                {
+                    b.HasOne("Api.Entities.Sensor", "Sensor")
+                        .WithMany()
+                        .HasForeignKey("SensorId")
+                        .OnDelete(DeleteBehavior.SetNull);
+
+                    b.HasOne("Api.Entities.Series", "Series")
+                        .WithMany()
+                        .HasForeignKey("SeriesId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Sensor");
+
+                    b.Navigation("Series");
                 });
 
             modelBuilder.Entity("Api.Entities.Sensor", b =>

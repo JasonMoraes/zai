@@ -27,10 +27,8 @@ if (app.Environment.IsDevelopment())
 app.UseAuthentication();
 app.UseAuthorization();
 
-// Secure by default: every controller action requires a valid token unless it opts out with [AllowAnonymous],
-// so a new modifying endpoint can't be left unprotected by forgetting [Authorize]. (Scoped to controllers rather
-// than a global fallback policy, so routing's own 404/405 responses stay public, as the contract expects.)
-app.MapControllers().RequireAuthorization();
+// Actions without their own [Authorize…]/[AllowAnonymous] require an admin token: see AuthorizeByDefaultConvention.
+app.MapControllers();
 
 await app.Services.InitializeDatabaseAsync();
 

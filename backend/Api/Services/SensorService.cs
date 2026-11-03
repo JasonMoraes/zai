@@ -18,6 +18,12 @@ public class SensorService(
     public Task<Sensor?> GetAsync(int id, CancellationToken cancellationToken) =>
         db.Sensors.AsNoTracking().SingleOrDefaultAsync(s => s.Id == id, cancellationToken);
 
+    public Task<Sensor?> FindByApiKeyAsync(string apiKey, CancellationToken cancellationToken)
+    {
+        var hash = apiKeys.Hash(apiKey);
+        return db.Sensors.AsNoTracking().SingleOrDefaultAsync(s => s.ApiKeyHash == hash, cancellationToken);
+    }
+
     public async Task<SensorRegistration?> RegisterAsync(string name, int seriesId, CancellationToken cancellationToken)
     {
         if (!await db.Series.AnyAsync(s => s.Id == seriesId, cancellationToken))

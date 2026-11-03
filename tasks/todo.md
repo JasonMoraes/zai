@@ -276,3 +276,166 @@ Sensors reference a series, but series don't exist yet. **Proposal:** add the `S
 - An `X-API-Key` authentication handler: hash the presented key, look it up by `ApiKeyHash`, and pin the series from the sensor.
 - Updating `Sensor.LastMeasurementAt`.
 - `Measurement.SensorId` FK `ON DELETE SET NULL`.
+
+---
+
+# Measurement endpoints
+
+## Endpoints
+| Endpoint | Auth | Responses |
+|---|---|---|
+| `POST /api/measurements` `{value, timestamp?}` | **`X-API-Key` only**; an admin token alone gets **401** | 201 + `Location: /api/measurements/{id}`; 400; 401; 415; **422** value outside `[minValue, maxValue]` or timestamp more than 5 min in the future |
+| `GET /api/measurements?series=1,3&from=…&to=…&sort=-timestamp&limit=100` | public | 200 list; 400 bad parameters |
+| `GET /api/measurements/{id}` | public | 200; 404 |
+| `PUT/PATCH/DELETE /api/measurements/{id}` | — | 405 (routing does this already: the route exists for GET only) |
+
+Measurement: `{ id, seriesId, sensorId, value, timestamp }`.
+
+## Key decisions
+
+**1. Sensor authentication: a real authentication scheme.**
+- An `ApiKey` authentication handler reads `X-API-Key`, hashes it, and finds the sensor through the unique `ApiKeyHash` index. It puts `sensor_id` and `series_id` into the principal.
+- `POST` declares `[Authorize(AuthenticationSchemes = "ApiKey")]`, so a Bearer token is never even looked at, and an admin token alone gets 401.
+- The series comes from the key, never from the body.
+
+**2. The "secure by default" rule has to change shape.**
+- Today `MapControllers().RequireAuthorization()` adds a Bearer requirement to every action. ASP.NET **combines** that with an action's own `[Authorize]`: the schemes are merged, so an admin token **would** pass on `POST /api/measurements`. That breaks the contract.
+- Replacement: an MVC convention that adds `[Authorize]` only to actions that declare **no** authorization of their own (neither `[Authorize…]` nor `[AllowAnonymous]`).
+- It's equally secure by default, but an action that states its own scheme gets exactly that.
+- I'll re-run the "attribute-less probe endpoint gets 401" proof. Routing's 404 and 405 stay public.
+- Swagger gets the contract's `apiKeyAuth` scheme on this endpoint and `bearerAuth` elsewhere.
+
+**3. Strict timestamps (ISO 8601 with a zone, per the contract).**
+- System.Text.Json would read `2026-10-15T08:30:00` (no zone) as *server local time*. That's silently wrong, so timestamps are taken as strings and parsed strictly.
+- Accepted: `Z` or `±hh:mm`, seconds optional, fractional seconds allowed. Anything else gives 400.
+- Query strings: a `+` in `from=…+02:00` arrives as a space unless the client URL-encodes it, so a space in the offset position is read as `+`.
+- Stored truncated to microseconds and returned in UTC (`…+00:00`). The contract allows any zone as long as it's the same instant.
+
+**4. Validation split (contract: semantic → 422, syntax → 400).**
+- 400: missing `value`; wrong types; malformed timestamp; bad query parameters (non-numeric id in `series`, bad date, `sort` not `timestamp` or `-timestamp`, `limit` outside 1–10000).
+- 422: value outside the series range (inclusive), or timestamp more than 5 min after server time. Past timestamps are allowed, and a missing timestamp means "now".
+- `from > to` gives **200 `[]`** (an empty closed interval) rather than 400. An unknown series id in the filter also just matches nothing.
+
+**5. `sensorId` is omitted from the JSON when null.** The contract types it as `Id` (integer or string, *not* nullable) and doesn't require it. So once a sensor is deleted, its measurements leave the field out instead of sending `"sensorId": null`.
+
+**6. `Sensor.lastMeasurementAt` is the newest measurement *timestamp* from that sensor.**
+- It's updated atomically with an EF `ExecuteUpdate … WHERE LastMeasurementAt IS NULL OR < ts`.
+- Uploading historical data therefore never moves it backwards.
+- (The alternative would be "time of last upload".)
+
+## Data
+- `Measurement`: `Id` (bigint, since measurements are the high-volume table), `SeriesId` FK **cascade** (series delete removes its results), `SensorId` FK nullable **SET NULL** (sensor delete keeps its results), `Value` (double), `Timestamp` (timestamptz).
+- Indexes: `(SeriesId, Timestamp)` for the filtered query, and `(Timestamp)` for unfiltered queries.
+- Ordering: by timestamp, then id, so ties come back in a stable order.
+
+## Steps
+- [x] `Measurement` entity + config + migration
+- [x] Strict ISO 8601 parser + `[IsoDateTime]` validation attribute
+- [x] `ApiKeyAuthenticationHandler` (+ `ISensorService.FindByApiKeyAsync`); register the scheme
+- [x] Replace `RequireAuthorization()` with the authorize-by-default convention; re-prove with a probe; Swagger `apiKeyAuth`
+- [x] DTOs: `CreateMeasurementRequest`, `MeasurementQuery` (with `IValidatableObject`), `MeasurementResponse`
+- [x] `IMeasurementService` (create → result enum, query, get) incl. the `lastMeasurementAt` update
+- [x] `MeasurementsController`
+- [x] Test script: key auth (none / wrong / deleted-sensor key / admin token only → 401), 201 + Location, range edges (min and max inclusive, ε outside), future edge (+4 min OK, +6 min 422), missing timestamp means now, zone-less timestamp 400, every filter / sort / limit combination and edge, from > to, 404, 405s on PUT/PATCH/DELETE, `sensorId` omitted after sensor delete, series delete cascades, `lastMeasurementAt` monotonic; plus the auth and sensors regression suites
+- [x] Code review via subagent
+
+## Review
+
+**Status:** done and verified end-to-end. The measurements script has about 90 checks (17 exact-order assertions on filtering, sorting and limits). The sensors (35) and auth (59) regression suites pass unchanged.
+
+**Verified:**
+| Area | Result |
+|---|---|
+| Upload auth | No key, wrong key, empty key, or **admin token alone**: 401 (`WWW-Authenticate: ApiKey header="X-API-Key"`). Admin token plus a valid key: 201. A `seriesId` in the body is ignored. |
+| Upload rules | min and max are inclusive. `40.0001` and `-20.5`: 422. +4 min OK, +6 min 422. Both broken: 422 with 2 errors. Missing timestamp means now. Past timestamps OK. An offset is returned as the same instant in UTC. |
+| Upload syntax (400) | Missing, null, string, `1e400`/`-1e400` (infinite) or `NaN` value. Zone-less, date-only, Feb 30, numeric, garbage, or trailing-newline timestamp. Malformed or `null` body. Non-JSON gives 415, and without a key 401 comes first. |
+| List | Default ascending, `-timestamp`, `series` (one, several, with spaces, unknown), closed `from`/`to`, open-ended bounds, `from > to` gives `[]`, unencoded `+14:00`, `%2B`, `-02:00`, `limit`, and combinations. 400 for `limit` 0/10001/abc, bad `sort`, bad `series`, zone-less `from`. 406. |
+| Single | 200 public, 404. **405** on PUT/PATCH/DELETE `/{id}` (also anonymous) and PUT on the collection. |
+| Lifecycle | `lastMeasurementAt` is monotonic (back-fill doesn't move it, a 422 doesn't touch it). Sensor delete: its results stay, `SensorId` is NULL in the DB and omitted in the JSON, and its key gets 401. Series delete removes its results and invalidates its sensors' keys. |
+| Secure by default | A probe controller with no attributes gives 401 anonymous, 204 with an admin token, **401 with a sensor key**. |
+
+**Bugs found by testing and fixed:**
+- **An unfiltered `GET /api/measurements` returned `[]`.** An absent `series` was parsed as an *empty* id list, which matches nothing. It now means "no filter".
+- **500 on `from=…+14:00`.** Npgsql refuses `timestamptz` parameters with a non-zero offset. The strict parser now always returns UTC.
+- Swagger listed the DTO's computed `Descending`/`EffectiveLimit` as query parameters; they're now methods.
+
+**Code review (subagent). Applied:**
+- The ISO regex used `\d` (any Unicode digit) and `$` (accepts a trailing `\n`). A trailing newline **was** accepted (reproduced). It now uses `[0-9]` and `\z`.
+- A malformed timestamp could silently become "now" if validation were ever bypassed. It's now parsed once in `CreateMeasurementRequest.ParsedTimestamp()`, which throws instead.
+- Sub-microsecond query bounds: both `from` and `to` are truncated like stored values (truncation is monotonic). The reviewer suggested rounding `from` *up*, but that would have dropped a result posted at exactly `…00.1234567`, so I didn't. A test proves `from=to=…00.1234567Z` finds it.
+- The range check is NaN-safe (`!(v >= min && v <= max)`), and **`[FiniteNumber]`** gives 400 for `1e400`. That used to become Infinity and get 422; reusable for series `minValue`/`maxValue`.
+- `MaxFutureSkew` moved to `MeasurementRules`, so the controller no longer depends on the concrete service.
+- Polish messages for the remaining binding errors (e.g. empty body: "Treść żądania jest wymagana.").
+- Claim values use the invariant culture; `SensorClaimTypes` has its own file.
+
+**Not applied (noted):**
+- More than 7 fractional digits and leap seconds (`:60`) get 400. .NET can't represent them, and they're unlikely in tests.
+- `IValidatableObject` errors (`series`/`from`/`to`) only appear once attribute errors (`limit`/`sort`) are fixed, so a request with several bad parameters reports them in two rounds.
+- Empty query values (`?from=`) count as absent (200).
+- Each upload is 4 DB round trips and updates the sensor row (serialises one sensor's concurrent uploads). Fine at this scale.
+
+**Infrastructure:** the hand-written curl scripts were lost once when the session's scratch folder changed, and had to be recreated. This is a good argument for the **xUnit integration test project** (real Postgres, run with `dotnet test`) as the next infrastructure step.
+
+**Still to do in the backend:** series endpoints, incl. PUT 409 when the new range would exclude existing results, and DELETE cascading to measurements and sensors (already in the schema).
+
+---
+
+# Series endpoints (last contract piece)
+
+| Endpoint | Auth | Responses |
+|---|---|---|
+| `GET /api/series` | public | 200 list; 406 |
+| `GET /api/series/{id}` | public | 200; 404 |
+| `POST /api/series` | admin | **201** + `Location`; 400; 401; 415; **422** `minValue ≥ maxValue` |
+| `PUT /api/series/{id}` | admin | 200; 400; 401; 404; **409** new range excludes saved results; 422 |
+| `DELETE /api/series/{id}` | admin | 204 (cascades to results and sensors, already in the schema); 401; 404 |
+
+Series: `{ id, name, minValue, maxValue, color, icon, unit }`, with `icon`/`unit` nullable.
+
+## Decisions
+- **400 vs 422**, same split as sensors:
+  - **400**: schema violations. Missing fields, wrong types, name not 1–100 characters, `unit` over 20, `color` not `#RRGGBB`, non-finite numbers (`1e400`).
+  - **422**: the cross-field rule `minValue < maxValue`.
+- **PUT order:** 400 (body) → 422 (range) → 404 (no such series) → 409 (saved results outside the new range) → 200. A PUT that keeps every saved result inside the range is fine.
+- **409 race:** checking "no saved result is outside the new range" and then updating isn't enough on its own. An upload validated against the *old* range could commit in between and leave an out-of-range result. **Both PUT and uploads now take the series row lock first**:
+  - PUT through its own `UPDATE`, then it checks the results inside the same transaction.
+  - Uploads through a no-op `UPDATE` (EF Core has no `SELECT … FOR UPDATE`, and raw SQL is ruled out by the course rules).
+  - So the two serialise. The cost is that uploads to the *same* series serialise too, which is fine at this scale.
+
+## Steps
+- [x] `SeriesRequest` (+ `#RRGGBB` pattern, `[FiniteNumber]`, `[MaxCharacters]`), `SeriesResponse`
+- [x] `ISeriesService` / `SeriesService` (list, get, create → result, update → result, delete)
+- [x] `SeriesController` (GETs `[AllowAnonymous]`; writes admin by default)
+- [x] Uploads lock the series row before reading its range
+- [x] Test script for series; re-run the measurements, sensors and auth suites
+- [x] Code review via subagent
+
+## Review
+
+**Status:** done. **Every operation in contract v2.0.0 is now implemented.** Verified end-to-end with 4 suites, about 250 checks, all passing with no server errors: series 60, measurements 91 (17 exact-order assertions), sensors 36, auth 59.
+
+**Verified (series):**
+| Area | Result |
+|---|---|
+| Auth | GETs public. POST/PUT/DELETE: 401 without a token **or with only a sensor key**. 401 before 415. |
+| Create | 201 + `Location`. `icon`/`unit` are `null` when omitted or explicitly null. 100 characters / 100 emoji name and 20-character unit accepted. |
+| 422 | `min == max`, `min > max`. On PUT this comes even before 404 (the body is checked first). |
+| 400 | Missing fields, empty or 101-character name, 21-character unit, `#fff` / no `#` / `#GGGGGG` / 8-digit colour, numeric string `"0"`, `1e400`, numeric `unit`, NUL, malformed JSON. 400 wins over 422. |
+| Update | Full replace (an omitted `icon` becomes null). 404. **409** when the narrowed range excludes the saved min or max; **200 at the exact edges**; a 409 leaves the series unchanged (rolled back). Uploads respect the narrowed range afterwards. |
+| Lock | While another transaction holds the series row lock for 3 s, an upload and a PUT each wait about 2.5 s. An upload to a **different** series isn't blocked (0.01 s). |
+| Delete | 204. Its 4 results and 1 sensor are gone, that sensor's key gets 401, a second DELETE gives 404, other series are untouched. |
+
+**Bug found by testing and fixed (affects every endpoint):**
+- **JSON numbers sent as strings were accepted.** `"minValue": "0"` gave 201, and the same for `"value": "12"` and `"seriesId": "5"`, because ASP.NET's web defaults allow reading numbers from strings. Now `JsonNumberHandling.Strict`, so a wrong type gives 400 as the contract says. Each suite has a numeric-string case. The Swagger schemas are unchanged (plain `number`/`integer`).
+
+**Code review (subagent). Applied:**
+- PUT re-read the series **after** commit, when the lock is already released. A concurrent DELETE could turn a successful PUT into a 500, or a concurrent PUT could return someone else's values. It now returns what it wrote.
+- An index on `(SeriesId, Value)`, so PUT's "any saved result outside the new range" check doesn't scan the whole series while holding the lock (migration `AddMeasurementValueIndex`).
+- The reviewer confirmed the race analysis: READ COMMITTED visibility is correct with both writers locking first, the lock order is consistent (series → sensor → measurement), so no deadlock cycle, and FK `KEY SHARE` is compatible with PUT's lock.
+
+**Not applied (deliberate):**
+- **Whitespace-only names** (`"   "`) get 400 for series and sensors. The contract only says `minLength: 1`, so a strict schema-driven test *could* expect 201. Rejecting them is a reasonable product rule, and easy to flip (`[Required(AllowEmptyStrings = true)]`) if a test disagrees.
+- No length limit on `icon` (the contract sets none).
+- 409/404/401 bodies have no `errors` array (same as before; `errors` is optional in `Problem`).
+- Each upload's no-op `UPDATE` leaves a dead row version on the series row (cheap HOT update). Fine at this scale.
+- **Rule for the future:** any new code path that inserts measurements (e.g. a bulk import) must take the series lock the same way, or the 409 guarantee breaks.
