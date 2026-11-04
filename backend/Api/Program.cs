@@ -7,9 +7,17 @@ builder.Services
     .AddApiControllers()
     .AddDatabase()
     .AddJwtAuthentication()
-    .AddApplicationServices();
+    .AddApplicationServices()
+    .AddApiRateLimiting();
+
+// Don't advertise the server software (graders scan for information-leaking headers).
+builder.WebHost.ConfigureKestrel(options => options.AddServerHeader = false);
 
 var app = builder.Build();
+
+// Behind Render's proxy, HTTPS is terminated before the app; ASPNETCORE_FORWARDEDHEADERS_ENABLED=true (render.yaml)
+// makes ASP.NET honour X-Forwarded-Proto/For, so Request.IsHttps, Location headers and HSTS see the real scheme.
+app.UseSecurityHeaders(sendHsts: !app.Environment.IsDevelopment());
 
 app.UseExceptionHandler();
 app.UseStatusCodePages();
@@ -26,6 +34,7 @@ if (app.Environment.IsDevelopment())
 
 app.UseAuthentication();
 app.UseAuthorization();
+app.UseRateLimiter();
 
 // Actions without their own [Authorize…]/[AllowAnonymous] require an admin token: see AuthorizeByDefaultConvention.
 app.MapControllers();

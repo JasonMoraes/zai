@@ -5,6 +5,7 @@ using Api.Services;
 using Api.Validation;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 
 namespace Api.Controllers;
 
@@ -15,6 +16,7 @@ public class AuthController(IAuthService authService) : ControllerBase
 {
     [AllowAnonymous]
     [HttpPost("login")]
+    [EnableRateLimiting(RateLimitingExtensions.PasswordHashingPolicy)]
     [EndpointSummary("Logowanie administratora")]
     [ProducesResponseType<LoginResponse>(StatusCodes.Status200OK, "application/json")]
     [ProducesResponseType<ApiProblemDetails>(StatusCodes.Status400BadRequest, "application/problem+json")]
@@ -45,6 +47,7 @@ public class AuthController(IAuthService authService) : ControllerBase
 
     [Authorize]
     [HttpPut("password")]
+    [EnableRateLimiting(RateLimitingExtensions.PasswordHashingPolicy)]
     [EndpointSummary("Zmiana hasła zalogowanego administratora")]
     [ProducesResponseType(StatusCodes.Status204NoContent)]
     [ProducesResponseType<ApiProblemDetails>(StatusCodes.Status400BadRequest, "application/problem+json")]

@@ -1,0 +1,48 @@
+# Render Blueprint: the API (Docker, free plan) and its PostgreSQL database, created and wired together in one step.
+# In the Render dashboard: New > Blueprint > pick this repository; it asks only for the admin login (sync: false).
+#
+# Free-plan limits to keep in mind (and state in the documentation):
+#  - the web service sleeps after 15 min without traffic; the first request then takes about a minute;
+#  - the free database expires 30 days after creation (14-day grace period) and has no backups:
+#    recreate it, then re-run the data generator to restore the sample data.
+services:
+  - type: web
+    name: zai-api
+    runtime: docker
+    plan: free
+    region: frankfurt
+    dockerContext: ./backend
+    dockerfilePath: ./backend/Dockerfile
+    healthCheckPath: /api/health
+    autoDeployTrigger: commit
+    envVars:
+      - key: ASPNETCORE_ENVIRONMENT
+        value: Production
+      # Render terminates HTTPS in front of the app; this makes ASP.NET trust X-Forwarded-Proto/For,
+      # so Location headers say https:// and HSTS is sent.
+      - key: ASPNETCORE_FORWARDEDHEADERS_ENABLED
+        value: "true"
+      # postgresql:// URL on Render's private network; the app converts it for Npgsql.
+      - key: ConnectionStrings__Default
+        fromDatabase:
+          name: zai-db
+          property: connectionString
+      # Random 256-bit base64 value, generated once by Render.
+      - key: Jwt__SigningKey
+        generateValue: true
+      # The admin account created on first start; Render asks for these when the Blueprint is created.
+      # The password must be at least 8 characters.
+      - key: Admin__Username
+        sync: false
+      - key: Admin__Password
+        sync: false
+
+databases:
+  - name: zai-db
+    plan: free
+    region: frankfurt
+    databaseName: zai
+    user: zai
+    postgresMajorVersion: "17"
+    # No connections from the internet; only services in this Render workspace can reach it.
+    ipAllowList: []

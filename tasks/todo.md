@@ -182,7 +182,7 @@ A JWT can't be un-issued, so logout needs a server-side denylist:
 
 | Requirement | Status | How |
 |---|---|---|
-| Passwords stored with a password-hashing function (e.g. bcrypt) | ✅ | ASP.NET Core Identity `PasswordHasher`: **PBKDF2-HMAC-SHA512, 100,000 iterations, random salt per password**. It's an OWASP-recommended password KDF in the same class as bcrypt. A random-salted dummy hash keeps unknown-user logins equally slow. |
+| Passwords stored with a password-hashing function (e.g. bcrypt) | ✅ *(superseded: the full spec names Argon2id or bcrypt, so it was switched to **Argon2id**, see "Argon2id password hashing" below)* | ASP.NET Core Identity `PasswordHasher`: **PBKDF2-HMAC-SHA512, 100,000 iterations, random salt per password**. It's an OWASP-recommended password KDF in the same class as bcrypt. A random-salted dummy hash keeps unknown-user logins equally slow. |
 | No raw SQL; parameterised queries or an ORM | ✅ | All data access goes through EF Core. The one hand-written statement (the logout `INSERT … ON CONFLICT`, which was parameterised) is **replaced** by `Add` + `SaveChanges`, catching the unique-key violation from a concurrent duplicate logout. `grep` finds no `ExecuteSql`/`FromSql`/`SqlQuery` outside generated migrations. |
 | Safe session/token mechanism (HTTP-only cookie or limited-lifetime tokens) | ✅ | JWT HS256 (key ≥ 32 chars, algorithm pinned), **1 h lifetime**, 30 s clock skew. Revocable on logout through a DB denylist that survives restarts. Expired or wrong-signature tokens are rejected (tested). |
 | Authorization of all modifying operations on the server | ✅ | **Secure by default:** `MapControllers().RequireAuthorization()` makes every controller action require a token unless marked `[AllowAnonymous]` (only `health` and `login` are). Verified with a temporary controller with no attributes: 401 without a token, 204 with one. |
@@ -439,3 +439,89 @@ Series: `{ id, name, minValue, maxValue, color, icon, unit }`, with `icon`/`unit
 - 409/404/401 bodies have no `errors` array (same as before; `errors` is optional in `Problem`).
 - Each upload's no-op `UPDATE` leaves a dead row version on the series row (cheap HOT update). Fine at this scale.
 - **Rule for the future:** any new code path that inserts measurements (e.g. a bulk import) must take the series lock the same way, or the 409 guarantee breaks.
+
+---
+
+# Argon2id password hashing (T5.1)
+
+**Why:** the full course spec says "Argon2id **lub bcrypt**". We had ASP.NET's default **PBKDF2-HMAC-SHA512, 100k iterations** (read from the stored hash), which is also below OWASP's current 220k for SHA512. OWASP (Password Storage Cheat Sheet) puts Argon2id first, and bcrypt "only … in legacy systems". bcrypt also ignores input past 72 bytes, while we allow 256 characters (up to 1 KB in UTF-8). Hence Argon2id.
+
+**What changed:**
+- `Argon2idPasswordHasher : IPasswordHasher<AdminUser>` (Konscious 1.3.1). OWASP minimum `m=19456 KiB, t=2, p=1`, 16-byte salt, 32-byte hash, standard PHC string `$argon2id$v=19$…`.
+- **Old PBKDF2 hashes keep working** and are upgraded to Argon2id at the next login. Weaker Argon2 parameters are upgraded the same way.
+- Unknown-user logins verify against a fixed Argon2id dummy hash, so they cost exactly one real verification.
+- Empty passwords are rejected before any lookup (equally fast for every account).
+- The hash upgrade at login is best-effort: a DB error is logged, and the login still succeeds.
+- Parsing rejects malformed or hostile strings: parameter bounds, `m ≥ 8·p`, `m ≤ 256 MiB`.
+- **Concurrency limit** on the two Argon2 endpoints (login, password change): 4 at once, 100 queued, beyond that **429** problem+json.
+
+**Verified:**
+| Check | Result |
+|---|---|
+| Library vs **RFC 9106 §5.3 Argon2id test vector** | MATCH |
+| New salt per hash; correct password → Success, wrong → Failed; re-deriving from the PHC salt reproduces the hash | ✅ |
+| 256-char (512-byte) password with the last char changed | Failed (**no truncation**) |
+| Legacy PBKDF2 correct / wrong | SuccessRehashNeeded / Failed |
+| 9 malformed or hostile strings (incl. `m=99999999`, `m=8,p=4`) | Failed, never throws |
+| Live: existing admin PBKDF2 hash after first login | became `$argon2id$v=19$m=19456,t=2,p=1$…` |
+| Timing, 10 requests each: admin + wrong password vs unknown user | 47 ms vs 47 ms |
+| Corrupted stored hash | 401 (not 500) |
+| 20 parallel logins / 150-request burst | all 200 in 0.48 s / 401s + 429s, server stays healthy |
+| Auth suite | 58 checks, no 5xx, no server errors |
+
+**Bugs caught along the way:**
+- **Empty password → 500.** The Argon2 library throws on empty input; the old hasher didn't. Fixed with a guard in both `AuthService` and the hasher.
+- **My test summary hid that bug.** It took the status from the *label* (`"login empty password -> 401"`) instead of the response. The summary now reads the text after the *last* `->`. Re-checking the earlier series, measurements and sensors outputs showed no hidden 5xx there.
+
+**Cost:** about 45 ms of CPU and 19 MiB per verification. That's why the concurrency limit exists.
+
+**Deferred to deployment:** a **per-IP rate limit** on login. Behind the host's proxy every client appears as the proxy's IP until forwarded headers are configured, and the graders' tests log in from one IP, so it needs care.
+
+---
+
+# Render deployment readiness
+
+**Hosting decision:** Render only (free Docker web service + Render free Postgres). Accepted risks: the web service sleeps after 15 min idle (about 1 min to wake, so the docs must say so), and the free DB expires 30 days after creation (+14-day grace) with no backups. If that happens before grading: create a new DB via the Blueprint, redeploy, and re-run the generator for the sample data.
+
+**Added:**
+- `backend/Dockerfile`: multi-stage (sdk → aspnet 8.0), non-root `app` user, listens on Render's `$PORT` (fallback 8080), `exec` so SIGTERM reaches dotnet. `backend/.dockerignore` (bin/obj/dev settings). `appsettings.Development.json` is excluded from publish (verified absent from the image).
+- `render.yaml` Blueprint: web service + database in frankfurt, wired via `fromDatabase.connectionString`.
+  - `Jwt__SigningKey` comes from `generateValue: true`.
+  - `Admin__Username` and `Admin__Password` are `sync: false` (asked for at creation).
+  - `ASPNETCORE_FORWARDEDHEADERS_ENABLED=true`.
+  - `ipAllowList: []` (no internet access to the DB).
+- `PostgresConnectionString.Normalize`: Render hands out a `postgresql://` URL; Npgsql only takes keyword strings.
+  - Handles percent-encoded credentials, a default port, IPv6 and `sslmode` (incl. libpq spellings like `verify-full`).
+  - Unknown options throw instead of being silently ignored.
+- **Security headers (A4)** on every response, error responses included (set in `OnStarting`):
+  - strict CSP `default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'`;
+  - `nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`, COOP/CORP, `Permissions-Policy`;
+  - `Cache-Control: no-store`;
+  - **HSTS** (1 year) on HTTPS requests outside Development.
+  - The `Server: Kestrel` header is removed.
+- **F4:** a warning log line for every rejected upload: rule violations (value, range, timestamp, sensor, series) and missing or invalid keys (never the key itself).
+- **T4 CHECK constraints:** `CK_Series_Range` (min < max), `CK_Series_Finite` (no NaN/±Infinity), `CK_Series_Color` (`#RRGGBB`), `CK_Series_Name` and `CK_Sensors_Name` (not blank, incl. tabs/newlines), `CK_Measurements_Value_Finite`. Migrations: `AddCheckConstraints`, `TightenCheckConstraints`.
+
+**Verified** by running the real image in Production mode against a fresh `postgres:17` container:
+- All 7 migrations apply on an empty DB, the admin is seeded with an Argon2id hash, and the app listens on `PORT=10000` as `app`.
+- With `Host` + `X-Forwarded-Proto: https` (as behind Render): **`Location: https://zai-api.onrender.com/api/series/1`**, plus HSTS, CSP and `no-store`, with no `Server` header. The same holds on 401/404 responses. No HSTS on plain HTTP.
+- Uploads give 201 / 422 / 401 (bad key) / 401 (no key), and each rejection appears as a warning in the log. Swagger gives 404 in Production.
+- Direct SQL inserts breaking each constraint are refused by Postgres. Valid rows are accepted.
+- URL conversion edge cases: 7 inputs, including `p%40ss%3Aw%2Frd`, `verify-full`, `[::1]` and unknown options.
+- 4 end-to-end suites (245 checks) pass in Development.
+
+**Code review (subagent). Applied:**
+- HSTS was lost on 500s (the exception handler clears headers set before it), so it moved into `OnStarting`.
+- `sslmode=verify-full` was silently dropped (a quiet downgrade to unverified TLS).
+- NaN/Infinity could pass `CK_Series_Range` (PostgreSQL orders NaN above every number).
+- `btrim` only strips spaces.
+- `Cache-Control: no-store`, `Server` header removed, IPv6 host parsing.
+
+**To check after the first deploy:**
+- Render's docs don't mention `X-Forwarded-*`. Confirm a 201 `Location` says `https://`.
+- Log `RemoteIpAddress` vs the raw `X-Forwarded-For` once. Render sits behind Cloudflare, so the rightmost entry may be an edge IP, which matters before adding a **per-IP login rate limit**.
+- Warm the service with `GET /api/health` before graders run, and note the cold start in the docs.
+
+**Frontend note:** the API's CSP (`default-src 'none'`) would block an SPA served by the same app. If Angular is served by the API, give non-`/api` paths their own CSP. If it's hosted separately, add CORS for that one origin.
+
+**Blocking for E1:** the repository has **no git remote**. Render deploys from GitHub/GitLab, and T9 needs the repo link at E1.

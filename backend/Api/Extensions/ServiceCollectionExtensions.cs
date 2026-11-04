@@ -96,7 +96,7 @@ public static class ServiceCollectionExtensions
             if (string.IsNullOrWhiteSpace(connectionString))
                 throw new InvalidOperationException("Connection string 'Default' is not configured.");
 
-            options.UseNpgsql(connectionString);
+            options.UseNpgsql(PostgresConnectionString.Normalize(connectionString));
         });
         services.AddOptions<AdminOptions>()
             .BindConfiguration(AdminOptions.SectionName)
@@ -150,7 +150,7 @@ public static class ServiceCollectionExtensions
     public static IServiceCollection AddApplicationServices(this IServiceCollection services)
     {
         services.AddSingleton(TimeProvider.System);
-        services.AddSingleton<IPasswordHasher<AdminUser>, PasswordHasher<AdminUser>>();
+        services.AddSingleton<IPasswordHasher<AdminUser>, Argon2idPasswordHasher>();
         services.AddSingleton<ITokenService, TokenService>();
         services.AddScoped<IAuthService, AuthService>();
         services.AddScoped<ITokenRevocationService, TokenRevocationService>();

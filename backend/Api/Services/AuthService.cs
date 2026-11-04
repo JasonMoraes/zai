@@ -14,12 +14,22 @@ public partial class AuthService(
     ITokenRevocationService revocations,
     ILogger<AuthService> logger) : IAuthService
 {
-    // Verified against when the username is unknown, so both failure paths take the same time.
-    private static readonly string DummyPasswordHash =
-        new PasswordHasher<AdminUser>().HashPassword(new AdminUser { Username = "" }, Guid.NewGuid().ToString());
+    // Verified against when the username is unknown, so both failure paths cost one real Argon2id verification.
+    // An Argon2id hash (current parameters) of a random password that was thrown away, so nothing can match it.
+    // If Argon2idPasswordHasher's parameters are ever raised, regenerate this so its cost keeps matching real hashes.
+    private const string DummyPasswordHash =
+        "$argon2id$v=19$m=19456,t=2,p=1$NF1UJP+993zFMm+IC3poCQ$fdt7GIdHvY4q32zOxo9JtT4pPdYIxBYkbsuTOMEnb5Y";
 
     public async Task<AccessToken?> LoginAsync(string username, string password, CancellationToken cancellationToken)
     {
+        // No stored password can be empty (minimum 8). Rejecting it before any lookup makes it equally fast for every
+        // account, whatever hash format that account still has.
+        if (password.Length == 0)
+        {
+            logger.LogWarning("Failed login for {Username}: empty password", ForLog(username));
+            return null;
+        }
+
         var user = await db.AdminUsers.SingleOrDefaultAsync(u => u.Username == username, cancellationToken);
         var result = hasher.VerifyHashedPassword(
             user ?? new AdminUser { Username = "" }, user?.PasswordHash ?? DummyPasswordHash, password);
@@ -31,12 +41,24 @@ public partial class AuthService(
         }
 
         if (result == PasswordVerificationResult.SuccessRehashNeeded)
+            await UpgradeHashAsync(user, password, cancellationToken);
+
+        return tokens.CreateToken(user);
+    }
+
+    // Best effort: the password was correct, so a failure to store the stronger hash must not fail the login.
+    // The old hash still works and the upgrade is retried at the next login.
+    private async Task UpgradeHashAsync(AdminUser user, string password, CancellationToken cancellationToken)
+    {
+        try
         {
             user.PasswordHash = hasher.HashPassword(user, password);
             await db.SaveChangesAsync(cancellationToken);
         }
-
-        return tokens.CreateToken(user);
+        catch (DbUpdateException e)
+        {
+            logger.LogWarning(e, "Could not upgrade the password hash for {Username}", user.Username);
+        }
     }
 
     public Task LogoutAsync(string jti, DateTimeOffset expiresAt, CancellationToken cancellationToken) =>
