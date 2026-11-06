@@ -8,7 +8,7 @@ POST /api/measurements
 X-API-Key: <klucz czujnika>
 Content-Type: application/json
 
-{ "value": 21.37, "timestamp": "2026-11-06T11:46:48Z" }
+{ "value": 21.75, "timestamp": "2026-11-06T11:46:48Z" }
 ```
 
 Seria, do której trafia wynik, wynika z klucza czujnika. Generator nigdy nie zapisuje niczego bezpośrednio do bazy
