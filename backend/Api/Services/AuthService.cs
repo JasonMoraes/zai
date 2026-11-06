@@ -1,6 +1,7 @@
 using System.Text.RegularExpressions;
 using Api.Data;
 using Api.Entities;
+using Api.Services.Models;
 using Api.Validation;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
@@ -23,7 +24,7 @@ public partial class AuthService(
     public async Task<AccessToken?> LoginAsync(string username, string password, CancellationToken cancellationToken)
     {
         // No stored password can be empty (minimum 8). Rejecting it before any lookup makes it equally fast for every
-        // account, whatever hash format that account still has.
+        // account.
         if (password.Length == 0)
         {
             logger.LogWarning("Failed login for {Username}: empty password", ForLog(username));
@@ -40,25 +41,7 @@ public partial class AuthService(
             return null;
         }
 
-        if (result == PasswordVerificationResult.SuccessRehashNeeded)
-            await UpgradeHashAsync(user, password, cancellationToken);
-
         return tokens.CreateToken(user);
-    }
-
-    // Best effort: the password was correct, so a failure to store the stronger hash must not fail the login.
-    // The old hash still works and the upgrade is retried at the next login.
-    private async Task UpgradeHashAsync(AdminUser user, string password, CancellationToken cancellationToken)
-    {
-        try
-        {
-            user.PasswordHash = hasher.HashPassword(user, password);
-            await db.SaveChangesAsync(cancellationToken);
-        }
-        catch (DbUpdateException e)
-        {
-            logger.LogWarning(e, "Could not upgrade the password hash for {Username}", user.Username);
-        }
     }
 
     public Task LogoutAsync(string jti, DateTimeOffset expiresAt, CancellationToken cancellationToken) =>

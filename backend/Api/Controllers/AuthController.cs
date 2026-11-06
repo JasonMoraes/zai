@@ -1,6 +1,7 @@
 using Api.Dtos.Auth;
 using Api.Errors;
 using Api.Extensions;
+using Api.Services.Models;
 using Api.Services;
 using Api.Validation;
 using Microsoft.AspNetCore.Authorization;

@@ -10,10 +10,6 @@ namespace Api.Services;
 /// <summary>
 /// Argon2id password hashing (course requirement T5.1; OWASP's first choice), stored in the standard PHC string
 /// format: <c>$argon2id$v=19$m=19456,t=2,p=1$&lt;salt&gt;$&lt;hash&gt;</c>.
-/// <para>
-/// Hashes created by ASP.NET Core's default PBKDF2 hasher are still verified, and reported as
-/// <see cref="PasswordVerificationResult.SuccessRehashNeeded"/> so the caller upgrades them on the next login.
-/// </para>
 /// </summary>
 public class Argon2idPasswordHasher : IPasswordHasher<AdminUser>
 {
@@ -28,8 +24,6 @@ public class Argon2idPasswordHasher : IPasswordHasher<AdminUser>
     // Upper bound accepted when verifying a stored hash, so a tampered string can't make one verification allocate gigabytes.
     private const int MaxMemoryKib = 256 * 1024;
 
-    private readonly PasswordHasher<AdminUser> legacy = new();
-
     public string HashPassword(AdminUser user, string password)
     {
         // Callers enforce a minimum length; an empty password reaching this point is a bug, not user input.
@@ -42,14 +36,6 @@ public class Argon2idPasswordHasher : IPasswordHasher<AdminUser>
 
     public PasswordVerificationResult VerifyHashedPassword(AdminUser user, string hashedPassword, string providedPassword)
     {
-        if (!hashedPassword.StartsWith("$argon2", StringComparison.Ordinal))
-        {
-            // A PBKDF2 hash from before the switch: accept it once, then let the caller store an Argon2id hash instead.
-            return legacy.VerifyHashedPassword(user, hashedPassword, providedPassword) == PasswordVerificationResult.Failed
-                ? PasswordVerificationResult.Failed
-                : PasswordVerificationResult.SuccessRehashNeeded;
-        }
-
         // The Argon2 library rejects empty input, and no stored password can be empty (minimum length 8), so an empty
         // attempt simply doesn't match. Failing fast here reveals nothing: it fails the same way for every account.
         if (providedPassword.Length == 0
@@ -57,13 +43,9 @@ public class Argon2idPasswordHasher : IPasswordHasher<AdminUser>
             return PasswordVerificationResult.Failed;
 
         var actual = Compute(providedPassword, salt, memory, iterations, parallelism, expected.Length);
-        if (!CryptographicOperations.FixedTimeEquals(actual, expected))
-            return PasswordVerificationResult.Failed;
-
-        // Stored with weaker parameters than today's (e.g. after raising them): upgrade on this login.
-        return memory < MemoryKib || iterations < Iterations || salt.Length < SaltBytes || expected.Length < HashBytes
-            ? PasswordVerificationResult.SuccessRehashNeeded
-            : PasswordVerificationResult.Success;
+        return CryptographicOperations.FixedTimeEquals(actual, expected)
+            ? PasswordVerificationResult.Success
+            : PasswordVerificationResult.Failed;
     }
 
     private static byte[] Compute(string password, byte[] salt, int memoryKib, int iterations, int parallelism, int length)

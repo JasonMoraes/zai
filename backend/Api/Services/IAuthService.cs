@@ -1,3 +1,5 @@
+using Api.Services.Models;
+
 namespace Api.Services;
 
 public interface IAuthService

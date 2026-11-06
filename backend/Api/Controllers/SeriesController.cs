@@ -1,5 +1,6 @@
 using Api.Dtos.Series;
 using Api.Errors;
+using Api.Services.Models;
 using Api.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;

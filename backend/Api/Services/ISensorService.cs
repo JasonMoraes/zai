@@ -1,4 +1,5 @@
 using Api.Entities;
+using Api.Services.Models;
 
 namespace Api.Services;
 

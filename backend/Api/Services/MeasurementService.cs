@@ -1,6 +1,7 @@
 using Api.Data;
 using Api.Entities;
 using Api.Extensions;
+using Api.Services.Models;
 using Microsoft.EntityFrameworkCore;
 using Npgsql;
 
