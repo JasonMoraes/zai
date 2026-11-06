@@ -29,6 +29,15 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
 
         modelBuilder.Entity<Series>(series =>
         {
+            // The database enforces the core rules too, so no code path (now or later) can store an invalid series.
+            series.ToTable(table =>
+            {
+                table.HasCheckConstraint("CK_Series_Range", "\"MinValue\" < \"MaxValue\"");
+                table.HasCheckConstraint("CK_Series_Color", "\"Color\" ~ '^#[0-9A-Fa-f]{6}$'");
+                table.HasCheckConstraint("CK_Series_Name", NotBlank("Name"));
+                // PostgreSQL orders NaN above every number, so "MinValue < MaxValue" alone would accept a NaN maximum.
+                table.HasCheckConstraint("CK_Series_Finite", Finite("MinValue") + " AND " + Finite("MaxValue"));
+            });
             series.Property(s => s.Name).HasMaxLength(FieldLimits.NameMaxLength);
             series.Property(s => s.Color).HasMaxLength(FieldLimits.ColorLength);
             series.Property(s => s.Unit).HasMaxLength(FieldLimits.UnitMaxLength);
@@ -36,6 +45,7 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
 
         modelBuilder.Entity<Sensor>(sensor =>
         {
+            sensor.ToTable(table => table.HasCheckConstraint("CK_Sensors_Name", NotBlank("Name")));
             sensor.Property(s => s.Name).HasMaxLength(FieldLimits.NameMaxLength);
             sensor.Property(s => s.ApiKeyHash).HasMaxLength(Sensor.ApiKeyHashLength).IsFixedLength();
             // Unique: measurement uploads look the sensor up by the hash of the key they present.
@@ -47,6 +57,8 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
 
         modelBuilder.Entity<Measurement>(measurement =>
         {
+            // PostgreSQL double precision can hold NaN and ±Infinity; a measurement never may.
+            measurement.ToTable(table => table.HasCheckConstraint("CK_Measurements_Value_Finite", Finite("Value")));
             // Contract: deleting a series removes its results; unregistering a sensor keeps them.
             measurement.HasOne(m => m.Series).WithMany().HasForeignKey(m => m.SeriesId)
                 .OnDelete(DeleteBehavior.Cascade);
@@ -60,4 +72,12 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             measurement.HasIndex(m => new { m.SeriesId, m.Value });
         });
     }
+
+    // Not empty or whitespace only (tabs and newlines included, unlike btrim, which only strips spaces).
+    private static string NotBlank(string column) => $"\"{column}\" !~ '^[[:space:]]*$'";
+
+    // double precision can hold NaN and ±Infinity; none of these columns ever may. (In PostgreSQL NaN = NaN is true,
+    // so <> comparisons work.)
+    private static string Finite(string column) =>
+        $"\"{column}\" <> 'NaN'::float8 AND \"{column}\" <> 'Infinity'::float8 AND \"{column}\" <> '-Infinity'::float8";
 }

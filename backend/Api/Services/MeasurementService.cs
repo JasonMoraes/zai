@@ -1,12 +1,14 @@
 using Api.Data;
 using Api.Entities;
 using Api.Extensions;
+using Api.Services.Models;
 using Microsoft.EntityFrameworkCore;
 using Npgsql;
 
 namespace Api.Services;
 
-public class MeasurementService(AppDbContext db, TimeProvider time) : IMeasurementService
+public class MeasurementService(AppDbContext db, TimeProvider time, ILogger<MeasurementService> logger)
+    : IMeasurementService
 {
     public async Task<CreateMeasurementResult> CreateAsync(
         int sensorId, int seriesId, double value, DateTimeOffset? timestamp, CancellationToken cancellationToken)
@@ -33,7 +35,13 @@ public class MeasurementService(AppDbContext db, TimeProvider time) : IMeasureme
         if (at > now + MeasurementRules.MaxFutureSkew)
             violations.Add(MeasurementRuleViolation.TimestampTooFarInFuture);
         if (violations.Count > 0)
+        {
+            // F4: every rejected result is recorded in the error log.
+            logger.LogWarning(
+                "Rejected measurement from sensor {SensorId} for series {SeriesId}: value {Value} at {Timestamp} broke {Violations} (allowed range [{MinValue}, {MaxValue}])",
+                sensorId, seriesId, value, at, string.Join(", ", violations), series.MinValue, series.MaxValue);
             return new CreateMeasurementResult(null, series, violations); // disposing rolls back, releasing the lock
+        }
 
         var measurement = new Measurement { SeriesId = seriesId, SensorId = sensorId, Value = value, Timestamp = at };
         db.Measurements.Add(measurement);

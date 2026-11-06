@@ -77,7 +77,10 @@ namespace Api.Data.Migrations
 
                     b.HasIndex("SeriesId", "Value");
 
-                    b.ToTable("Measurements");
+                    b.ToTable("Measurements", t =>
+                        {
+                            t.HasCheckConstraint("CK_Measurements_Value_Finite", "\"Value\" <> 'NaN'::float8 AND \"Value\" <> 'Infinity'::float8 AND \"Value\" <> '-Infinity'::float8");
+                        });
                 });
 
             modelBuilder.Entity("Api.Entities.RevokedToken", b =>
@@ -131,7 +134,10 @@ namespace Api.Data.Migrations
 
                     b.HasIndex("SeriesId");
 
-                    b.ToTable("Sensors");
+                    b.ToTable("Sensors", t =>
+                        {
+                            t.HasCheckConstraint("CK_Sensors_Name", "\"Name\" !~ '^[[:space:]]*$'");
+                        });
                 });
 
             modelBuilder.Entity("Api.Entities.Series", b =>
@@ -167,7 +173,16 @@ namespace Api.Data.Migrations
 
                     b.HasKey("Id");
 
-                    b.ToTable("Series");
+                    b.ToTable("Series", t =>
+                        {
+                            t.HasCheckConstraint("CK_Series_Color", "\"Color\" ~ '^#[0-9A-Fa-f]{6}$'");
+
+                            t.HasCheckConstraint("CK_Series_Finite", "\"MinValue\" <> 'NaN'::float8 AND \"MinValue\" <> 'Infinity'::float8 AND \"MinValue\" <> '-Infinity'::float8 AND \"MaxValue\" <> 'NaN'::float8 AND \"MaxValue\" <> 'Infinity'::float8 AND \"MaxValue\" <> '-Infinity'::float8");
+
+                            t.HasCheckConstraint("CK_Series_Name", "\"Name\" !~ '^[[:space:]]*$'");
+
+                            t.HasCheckConstraint("CK_Series_Range", "\"MinValue\" < \"MaxValue\"");
+                        });
                 });
 
             modelBuilder.Entity("Api.Entities.Measurement", b =>

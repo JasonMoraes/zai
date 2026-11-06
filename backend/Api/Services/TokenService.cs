@@ -1,6 +1,7 @@
 using System.Security.Claims;
 using Api.Configuration;
 using Api.Entities;
+using Api.Services.Models;
 using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.JsonWebTokens;
 using Microsoft.IdentityModel.Tokens;

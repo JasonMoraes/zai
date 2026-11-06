@@ -45,6 +45,10 @@ public class ApiKeyAuthenticationHandler(
 
     protected override Task HandleChallengeAsync(AuthenticationProperties properties)
     {
+        // F4: a result refused for lacking a valid sensor key is recorded in the error log (never the key itself).
+        var reason = Request.Headers.ContainsKey(ApiKeyDefaults.HeaderName) ? "invalid API key" : "missing API key";
+        Logger.LogWarning("Rejected request to {Path} from {RemoteIp}: {Reason}",
+            Request.Path, Context.Connection.RemoteIpAddress, reason);
         Response.Headers.WWWAuthenticate = $"{ApiKeyDefaults.AuthenticationScheme} header=\"{ApiKeyDefaults.HeaderName}\"";
         return base.HandleChallengeAsync(properties);
     }

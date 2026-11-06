@@ -1,6 +1,7 @@
 using System.Text.RegularExpressions;
 using Api.Data;
 using Api.Entities;
+using Api.Services.Models;
 using Api.Validation;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
@@ -14,12 +15,22 @@ public partial class AuthService(
     ITokenRevocationService revocations,
     ILogger<AuthService> logger) : IAuthService
 {
-    // Verified against when the username is unknown, so both failure paths take the same time.
-    private static readonly string DummyPasswordHash =
-        new PasswordHasher<AdminUser>().HashPassword(new AdminUser { Username = "" }, Guid.NewGuid().ToString());
+    // Verified against when the username is unknown, so both failure paths cost one real Argon2id verification.
+    // An Argon2id hash (current parameters) of a random password that was thrown away, so nothing can match it.
+    // If Argon2idPasswordHasher's parameters are ever raised, regenerate this so its cost keeps matching real hashes.
+    private const string DummyPasswordHash =
+        "$argon2id$v=19$m=19456,t=2,p=1$NF1UJP+993zFMm+IC3poCQ$fdt7GIdHvY4q32zOxo9JtT4pPdYIxBYkbsuTOMEnb5Y";
 
     public async Task<AccessToken?> LoginAsync(string username, string password, CancellationToken cancellationToken)
     {
+        // No stored password can be empty (minimum 8). Rejecting it before any lookup makes it equally fast for every
+        // account.
+        if (password.Length == 0)
+        {
+            logger.LogWarning("Failed login for {Username}: empty password", ForLog(username));
+            return null;
+        }
+
         var user = await db.AdminUsers.SingleOrDefaultAsync(u => u.Username == username, cancellationToken);
         var result = hasher.VerifyHashedPassword(
             user ?? new AdminUser { Username = "" }, user?.PasswordHash ?? DummyPasswordHash, password);
@@ -28,12 +39,6 @@ public partial class AuthService(
         {
             logger.LogWarning("Failed login for {Username}", ForLog(username));
             return null;
-        }
-
-        if (result == PasswordVerificationResult.SuccessRehashNeeded)
-        {
-            user.PasswordHash = hasher.HashPassword(user, password);
-            await db.SaveChangesAsync(cancellationToken);
         }
 
         return tokens.CreateToken(user);

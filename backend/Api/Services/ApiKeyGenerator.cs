@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using System.Text;
+using Api.Services.Models;
 using Microsoft.AspNetCore.WebUtilities;
 
 namespace Api.Services;

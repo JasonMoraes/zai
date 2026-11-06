@@ -3,6 +3,7 @@ using Api.Authentication;
 using Api.Dtos.Measurements;
 using Api.Errors;
 using Api.Extensions;
+using Api.Services.Models;
 using Api.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
